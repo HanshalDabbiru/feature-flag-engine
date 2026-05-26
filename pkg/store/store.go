@@ -12,6 +12,11 @@ type Store struct {
 	flags map[string]domain.FeatureFlag
 }
 
+// New returns a Store with an initialised flags map, ready for use.
+func New() *Store {
+	return &Store{flags: make(map[string]domain.FeatureFlag)}
+}
+
 // Get returns the FeatureFlag for the given key, or a zero-value FeatureFlag
 // if the key does not exist.
 func (s *Store) Get(key string) domain.FeatureFlag {

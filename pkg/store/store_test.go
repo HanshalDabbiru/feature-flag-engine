@@ -7,10 +7,6 @@ import (
 	"github.com/HanshalDabbiru/feature-flag-engine/pkg/domain"
 )
 
-func newStore() *Store {
-	return &Store{flags: make(map[string]domain.FeatureFlag)}
-}
-
 func makeFlag(key string, enabled bool) domain.FeatureFlag {
 	return domain.FeatureFlag{
 		Key:          key,
@@ -21,7 +17,7 @@ func makeFlag(key string, enabled bool) domain.FeatureFlag {
 }
 
 func TestGet_ExistingKey(t *testing.T) {
-	s := newStore()
+	s := New()
 	flag := makeFlag("my-flag", true)
 	s.flags["my-flag"] = flag
 
@@ -36,7 +32,7 @@ func TestGet_ExistingKey(t *testing.T) {
 }
 
 func TestGet_MissingKey(t *testing.T) {
-	s := newStore()
+	s := New()
 
 	got := s.Get("does-not-exist")
 
@@ -46,7 +42,7 @@ func TestGet_MissingKey(t *testing.T) {
 }
 
 func TestSet_StoresFlag(t *testing.T) {
-	s := newStore()
+	s := New()
 	flag := makeFlag("feature-x", true)
 
 	s.Set("feature-x", flag)
@@ -61,7 +57,7 @@ func TestSet_StoresFlag(t *testing.T) {
 }
 
 func TestSet_OverwritesExistingFlag(t *testing.T) {
-	s := newStore()
+	s := New()
 	s.flags["flag-a"] = makeFlag("flag-a", true)
 
 	updated := makeFlag("flag-a", false)
@@ -74,7 +70,7 @@ func TestSet_OverwritesExistingFlag(t *testing.T) {
 }
 
 func TestDelete_RemovesExistingKey(t *testing.T) {
-	s := newStore()
+	s := New()
 	s.flags["flag-b"] = makeFlag("flag-b", true)
 
 	s.Delete("flag-b")
@@ -85,14 +81,14 @@ func TestDelete_RemovesExistingKey(t *testing.T) {
 }
 
 func TestDelete_NonExistentKeyIsNoOp(t *testing.T) {
-	s := newStore()
+	s := New()
 
 	// should not panic
 	s.Delete("ghost-flag")
 }
 
 func TestList_EmptyStore(t *testing.T) {
-	s := newStore()
+	s := New()
 
 	got := s.List()
 
@@ -102,7 +98,7 @@ func TestList_EmptyStore(t *testing.T) {
 }
 
 func TestList_ReturnsAllFlags(t *testing.T) {
-	s := newStore()
+	s := New()
 	s.flags["alpha"] = makeFlag("alpha", true)
 	s.flags["beta"] = makeFlag("beta", false)
 	s.flags["gamma"] = makeFlag("gamma", true)
@@ -115,7 +111,7 @@ func TestList_ReturnsAllFlags(t *testing.T) {
 }
 
 func TestList_ReturnsCopy(t *testing.T) {
-	s := newStore()
+	s := New()
 	s.flags["x"] = makeFlag("x", true)
 
 	got := s.List()
@@ -131,7 +127,7 @@ func TestList_ReturnsCopy(t *testing.T) {
 // overlapping keys. The WaitGroup ensures the test does not exit until every
 // goroutine has finished.
 func TestConcurrent(t *testing.T) {
-	s := newStore()
+	s := New()
 	var wg sync.WaitGroup
 
 	for i := 0; i < 50; i++ {
@@ -140,7 +136,7 @@ func TestConcurrent(t *testing.T) {
 			defer wg.Done()
 			key := fmt.Sprintf("flag-%d", i)
 			s.Set(key, domain.FeatureFlag{Key: key})
-		}(i)
+		}(i) // Pass in i as a parameter for the function
 	}
 
 	for i := 0; i < 50; i++ {
