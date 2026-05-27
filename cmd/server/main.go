@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/HanshalDabbiru/feature-flag-engine/pkg/api"
 	"github.com/HanshalDabbiru/feature-flag-engine/pkg/persistence"
 	"github.com/HanshalDabbiru/feature-flag-engine/pkg/store"
 )
@@ -17,9 +18,12 @@ func main() {
 		log.Fatalf("failed to load flags: %v", err)
 	}
 
-	http.HandleFunc("/health", healthHandler)
+	handler := api.New(s, p)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", healthHandler)
+	handler.RegisterRoutes(mux)
 	log.Println("server started on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(":8080", mux))
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
