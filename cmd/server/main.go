@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/HanshalDabbiru/feature-flag-engine/pkg/api"
+	"github.com/HanshalDabbiru/feature-flag-engine/pkg/hub"
 	"github.com/HanshalDabbiru/feature-flag-engine/pkg/persistence"
 	"github.com/HanshalDabbiru/feature-flag-engine/pkg/store"
 )
@@ -13,12 +14,13 @@ import (
 func main() {
 	s := store.New()
 	p := persistence.New("flags.json", s)
+	h := hub.New()
 	err := p.Load()
 	if err != nil {
 		log.Fatalf("failed to load flags: %v", err)
 	}
 
-	handler := api.New(s, p)
+	handler := api.New(s, p, h)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 	handler.RegisterRoutes(mux)
