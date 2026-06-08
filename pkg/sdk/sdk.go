@@ -68,3 +68,70 @@ func (c *Client) Get(key string) domain.FeatureFlag {
 	defer c.mu.RUnlock()
 	return c.flags[key]
 }
+
+// Evaluate walks the flag's rules in order and returns the first matching rule's
+// Value. Returns DefaultValue if the flag is not found, disabled, or no rules match.
+func (c *Client) Evaluate(key string, ctx domain.UserContext) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	flag, ok := c.flags[key]
+	if !ok {
+		return flag.DefaultValue
+	}
+	if !flag.Enabled {
+		return flag.DefaultValue
+	}
+	for _, rule := range flag.Rules {
+		matched := true
+		for _, pred := range rule.Predicates {
+			if !matchesPredicate(pred, ctx) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return rule.Value
+		}
+	}
+	return flag.DefaultValue
+}
+
+// matchesPredicate reports whether a single predicate holds for the given user context.
+func matchesPredicate(p domain.Predicate, uctx domain.UserContext) bool {
+	if len(p.Values) == 0 {
+		return false
+	}
+	val := uctx[p.Attribute]
+	switch p.Operator {
+	case domain.EQUALS:
+		for _, v := range p.Values {
+			if val == v {
+				return true
+			}
+		}
+		return false
+	case domain.NOT_EQUALS:
+		for _, v := range p.Values {
+			if val == v {
+				return false
+			}
+		}
+		return true
+	case domain.CONTAINS:
+		for _, v := range p.Values {
+			if strings.Contains(val, v) {
+				return true
+			}
+		}
+		return false
+	case domain.STARTS_WITH:
+		for _, v := range p.Values {
+			if strings.HasPrefix(val, v) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
