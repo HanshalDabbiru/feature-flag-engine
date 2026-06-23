@@ -6,11 +6,25 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/HanshalDabbiru/feature-flag-engine/pkg/domain"
 )
+
+// waitForFlag polls the client cache until key appears or the timeout elapses.
+func waitForFlag(t *testing.T, c *Client, key string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if c.Get(key).Key != "" {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for flag %q to appear in cache", key)
+}
 
 // TestGet_ReturnsZeroValueForMissingKey verifies that Get returns the zero value
 // of domain.FeatureFlag when the requested key has never been received from the server.
@@ -35,9 +49,12 @@ func TestConnect_ParsesSSEEvent(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if err := c.Connect(context.Background()); err != nil {
-		t.Fatalf("Connect returned unexpected error: %v", err)
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Connect runs the reconnect loop; run it in a goroutine and poll for the flag.
+	go c.Connect(ctx) //nolint:errcheck
+
+	waitForFlag(t, c, "checkout-v2", 2*time.Second)
 
 	got := c.Get("checkout-v2")
 	if got.Key != want.Key {
@@ -62,9 +79,11 @@ func TestConnect_IgnoresNonDataLines(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if err := c.Connect(context.Background()); err != nil {
-		t.Fatalf("Connect returned unexpected error: %v", err)
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Connect(ctx) //nolint:errcheck
+
+	waitForFlag(t, c, "dark-mode", 2*time.Second)
 
 	got := c.Get("dark-mode")
 	if got.Key != want.Key {
@@ -90,8 +109,12 @@ func TestConnect_MultipleEvents(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL)
-	if err := c.Connect(context.Background()); err != nil {
-		t.Fatalf("Connect returned unexpected error: %v", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Connect(ctx) //nolint:errcheck
+
+	for _, want := range flags {
+		waitForFlag(t, c, want.Key, 2*time.Second)
 	}
 
 	for _, want := range flags {
@@ -152,6 +175,84 @@ func TestConnect_ServerError(t *testing.T) {
 	c := New(srv.URL)
 	if err := c.Connect(context.Background()); err == nil {
 		t.Fatal("expected non-nil error for HTTP 500, got nil")
+	}
+}
+
+// TestConnect_ReconnectsAfterDisconnect verifies that Connect automatically
+// reconnects after a dropped connection, accumulating flags from both sessions.
+func TestConnect_ReconnectsAfterDisconnect(t *testing.T) {
+	var reqCount int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Atomically increment so concurrent reconnects are counted correctly.
+		n := atomic.AddInt32(&reqCount, 1)
+		var key string
+		switch n {
+		case 1:
+			key = "flag-a"
+		case 2:
+			key = "flag-b"
+		default:
+			// Extra reconnects after both flags are delivered — close immediately.
+			return
+		}
+		b, _ := json.Marshal(domain.FeatureFlag{Key: key, Enabled: true})
+		fmt.Fprintf(w, "data: %s\n\n", b)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	// 1ms delay so the test doesn't wait 2 seconds between reconnects.
+	c.reconnectDelay = 1 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go c.Connect(ctx) //nolint:errcheck
+
+	// Block until the second connection has delivered its flag.
+	waitForFlag(t, c, "flag-a", 2*time.Second)
+	waitForFlag(t, c, "flag-b", 2*time.Second)
+
+	cancel()
+
+	if got := c.Get("flag-a"); got.Key != "flag-a" {
+		t.Errorf("flag-a: got key %q", got.Key)
+	}
+	if got := c.Get("flag-b"); got.Key != "flag-b" {
+		t.Errorf("flag-b: got key %q", got.Key)
+	}
+}
+
+// TestConnect_ContextCancelledDuringDelay verifies that cancelling the context
+// while Connect is waiting to reconnect causes it to return immediately rather
+// than sleeping out the full reconnect delay.
+func TestConnect_ContextCancelledDuringDelay(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Close the connection immediately without writing anything.
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL)
+	// Long delay so the test would block for 10 seconds if cancellation is not respected.
+	c.reconnectDelay = 10 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Buffered so the goroutine doesn't leak if the test times out before Connect returns.
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Connect(ctx)
+	}()
+
+	// Give the first connection attempt time to complete before cancelling.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// Connect returned — cancellation was respected during the delay.
+	case <-time.After(1 * time.Second):
+		t.Fatal("Connect did not return promptly after context cancellation during reconnect delay")
 	}
 }
 

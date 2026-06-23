@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/HanshalDabbiru/feature-flag-engine/pkg/domain"
 )
@@ -15,50 +16,76 @@ import (
 // Client connects to a feature flag engine server, maintains a local copy of
 // all flags, and evaluates them in memory without additional network round-trips.
 type Client struct {
-	serverURL string
-	mu        sync.RWMutex
-	flags     map[string]domain.FeatureFlag
+	serverURL      string
+	mu             sync.RWMutex
+	flags          map[string]domain.FeatureFlag
+	reconnectDelay time.Duration
 }
 
 // New returns a Client that will connect to the given serverURL.
 func New(serverURL string) *Client {
 	return &Client{
-		serverURL: serverURL,
-		flags:     make(map[string]domain.FeatureFlag),
+		serverURL:      serverURL,
+		flags:          make(map[string]domain.FeatureFlag),
+		reconnectDelay: 2 * time.Second,
 	}
 }
 
+// Connect opens a persistent SSE connection to serverURL/stream and keeps the
+// local flag cache up to date as events arrive. If the connection drops, Connect
+// waits reconnectDelay then reconnects automatically. It blocks until ctx is
+// cancelled, at which point it stops reconnecting and returns nil.
 func (c *Client) Connect(ctx context.Context) error {
-	resp, err := http.Get(c.serverURL + "/stream")
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		return fmt.Errorf("unexpected status %s", resp.Status)
-	}
-
-	go func() {
-		<-ctx.Done()
-		resp.Body.Close()
-	}()
-
-	scanner := bufio.NewScanner(resp.Body)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
+	for {
+		resp, err := http.Get(c.serverURL + "/stream")
+		if err != nil {
+			return err
 		}
-		raw := strings.TrimPrefix(line, "data: ")
-		var flag domain.FeatureFlag
-		if err := json.Unmarshal([]byte(raw), &flag); err != nil {
-			continue
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return fmt.Errorf("unexpected status %s", resp.Status)
 		}
-		c.mu.Lock()
-		c.flags[flag.Key] = flag
-		c.mu.Unlock()
+
+		connCtx, connCancel := context.WithCancel(ctx)
+		go func() {
+			<-connCtx.Done()
+			resp.Body.Close()
+		}()
+
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			raw := strings.TrimPrefix(line, "data: ")
+			var flag domain.FeatureFlag
+			if err := json.Unmarshal([]byte(raw), &flag); err != nil {
+				continue
+			}
+			c.mu.Lock()
+			c.flags[flag.Key] = flag
+			c.mu.Unlock()
+		}
+
+		_ = scanner.Err()
+		connCancel()
+
+		timer := time.NewTimer(c.reconnectDelay)
+		select {
+		case <-timer.C:
+			continue
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		}
 	}
-	return scanner.Err()
+}
+
+// SetReconnectDelay configures how long Connect waits between reconnect attempts.
+// The default is 2 seconds. Useful in tests to speed up reconnection.
+func (c *Client) SetReconnectDelay(d time.Duration) {
+	c.reconnectDelay = d
 }
 
 // Get returns the locally cached FeatureFlag for the given key.
