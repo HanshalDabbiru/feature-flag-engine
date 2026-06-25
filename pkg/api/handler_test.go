@@ -199,8 +199,7 @@ func TestDeleteFlag_NotFound(t *testing.T) {
 
 	h.DeleteFlag(w, r)
 
-	// store.Delete is a no-op for missing keys, so 204 is still expected
-	if w.Code != http.StatusNoContent {
-		t.Errorf("expected 204 for missing key, got %d", w.Code)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing key, got %d", w.Code)
 	}
 }

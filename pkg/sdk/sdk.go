@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -37,8 +38,16 @@ func New(serverURL string) *Client {
 // cancelled, at which point it stops reconnecting and returns nil.
 func (c *Client) Connect(ctx context.Context) error {
 	for {
-		resp, err := http.Get(c.serverURL + "/stream")
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.serverURL+"/stream", nil)
 		if err != nil {
+			return err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			// A cancelled context produces an error here; treat it as a clean exit.
+			if ctx.Err() != nil {
+				return nil
+			}
 			return err
 		}
 		if resp.StatusCode != http.StatusOK {
@@ -68,7 +77,9 @@ func (c *Client) Connect(ctx context.Context) error {
 			c.mu.Unlock()
 		}
 
-		_ = scanner.Err()
+		if err := scanner.Err(); err != nil {
+			log.Printf("stream error: %v", err)
+		}
 		connCancel()
 
 		timer := time.NewTimer(c.reconnectDelay)

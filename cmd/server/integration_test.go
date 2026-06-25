@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -161,5 +163,172 @@ func TestEndToEnd_MultiClientBroadcast(t *testing.T) {
 	}
 	if got := client2.Get("e2e-flag"); !got.Enabled {
 		t.Errorf("client2 Enabled: got false, want true")
+	}
+}
+
+// TestLoadTest_100ConcurrentClients verifies that a flag broadcast reaches all
+// 100 simultaneously connected SDK clients within 5 seconds.
+func TestLoadTest_100ConcurrentClients(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	const numClients = 100
+	clients := make([]*sdk.Client, numClients)
+	for i := range clients {
+		c := sdk.New(srv.URL)
+		c.SetReconnectDelay(1 * time.Millisecond)
+		clients[i] = c
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var wg sync.WaitGroup
+	wg.Add(numClients)
+	for _, c := range clients {
+		c := c
+		go func() {
+			defer wg.Done()
+			c.Connect(ctx) //nolint:errcheck
+		}()
+	}
+	t.Cleanup(func() {
+		cancel()
+		wg.Wait()
+	})
+
+	time.Sleep(50 * time.Millisecond)
+
+	body := `{"Key":"load-flag","Enabled":true,"DefaultValue":false}`
+	resp, err := http.Post(srv.URL+"/flags", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /flags: %v", err)
+	}
+	resp.Body.Close()
+
+	waitForCondition(t, func() bool {
+		for _, c := range clients {
+			if c.Get("load-flag").Key == "" {
+				return false
+			}
+		}
+		return true
+	}, 5*time.Second, fmt.Sprintf("timed out waiting for load-flag to reach all %d clients", numClients))
+}
+
+// TestLoadTest_100ConcurrentClients_Toggle verifies that both a flag creation and
+// a subsequent toggle broadcast reach all 100 simultaneously connected SDK clients.
+func TestLoadTest_100ConcurrentClients_Toggle(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	const numClients = 100
+	clients := make([]*sdk.Client, numClients)
+	for i := range clients {
+		c := sdk.New(srv.URL)
+		c.SetReconnectDelay(1 * time.Millisecond)
+		clients[i] = c
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var wg sync.WaitGroup
+	wg.Add(numClients)
+	for _, c := range clients {
+		c := c
+		go func() {
+			defer wg.Done()
+			c.Connect(ctx) //nolint:errcheck
+		}()
+	}
+	t.Cleanup(func() {
+		cancel()
+		wg.Wait()
+	})
+
+	time.Sleep(50 * time.Millisecond)
+
+	body := `{"Key":"toggle-flag","Enabled":true,"DefaultValue":false}`
+	resp, err := http.Post(srv.URL+"/flags", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /flags: %v", err)
+	}
+	resp.Body.Close()
+
+	waitForCondition(t, func() bool {
+		for _, c := range clients {
+			if c.Get("toggle-flag").Key == "" {
+				return false
+			}
+		}
+		return true
+	}, 5*time.Second, fmt.Sprintf("create: timed out waiting for toggle-flag to reach all %d clients", numClients))
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/flags/toggle-flag", nil)
+	if err != nil {
+		t.Fatalf("building PUT request: %v", err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /flags/toggle-flag: %v", err)
+	}
+	resp.Body.Close()
+
+	waitForCondition(t, func() bool {
+		for _, c := range clients {
+			if c.Get("toggle-flag").Enabled {
+				return false
+			}
+		}
+		return true
+	}, 5*time.Second, fmt.Sprintf("toggle: timed out waiting for toggle-flag disable to reach all %d clients", numClients))
+}
+
+// TestLoadTest_NoGoroutineLeakOnDisconnect verifies that cancelling all 100 SDK
+// clients causes every Stream handler to exit and every hub.Unregister() to run,
+// returning the hub's registered client count to zero.
+func TestLoadTest_NoGoroutineLeakOnDisconnect(t *testing.T) {
+	s := store.New()
+	p := persistence.New(filepath.Join(t.TempDir(), "flags.json"), s)
+	h := hub.New()
+	handler := api.New(s, p, h)
+	mux := http.NewServeMux()
+	handler.RegisterRoutes(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	const numClients = 100
+	clients := make([]*sdk.Client, numClients)
+	for i := range clients {
+		c := sdk.New(srv.URL)
+		c.SetReconnectDelay(1 * time.Millisecond)
+		clients[i] = c
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var wg sync.WaitGroup
+	wg.Add(numClients)
+	for _, c := range clients {
+		c := c
+		go func() {
+			defer wg.Done()
+			c.Connect(ctx) //nolint:errcheck
+		}()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	if got := h.Len(); got != numClients {
+		t.Fatalf("before cancel: hub.Len() = %d, want %d", got, numClients)
+	}
+
+	cancel()  // signal all active SSE streams to stop
+	wg.Wait() // all Connect() calls return: ctx.Done in reconnect select, or
+	          // context cancellation propagated through the in-flight http request
+
+	waitForCondition(t, func() bool {
+		return h.Len() == 0
+	}, 3*time.Second, "timed out waiting for hub to drain after disconnect")
+
+	if got := h.Len(); got != 0 {
+		t.Errorf("after disconnect: hub.Len() = %d, want 0", got)
 	}
 }

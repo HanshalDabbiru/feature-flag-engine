@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/HanshalDabbiru/feature-flag-engine/pkg/domain"
@@ -37,7 +38,9 @@ func (h *Handler) CreateFlag(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(flag)
+	if err := json.NewEncoder(w).Encode(flag); err != nil {
+		log.Printf("failed to encode response: %v", err)
+	}
 
 	h.hub.Broadcast(flag)
 }
@@ -47,7 +50,9 @@ func (h *Handler) ListFlags(w http.ResponseWriter, r *http.Request) {
 	flags := h.store.List()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(flags)
+	if err := json.NewEncoder(w).Encode(flags); err != nil {
+		log.Printf("failed to encode response: %v", err)
+	}
 }
 
 // GetFlag handles GET /flags/{key}.
@@ -60,7 +65,9 @@ func (h *Handler) GetFlag(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(flag)
+	if err := json.NewEncoder(w).Encode(flag); err != nil {
+		log.Printf("failed to encode response: %v", err)
+	}
 }
 
 // DeleteFlag handles DELETE /flags/{key}, removing the flag from the store and
@@ -68,6 +75,10 @@ func (h *Handler) GetFlag(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) DeleteFlag(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	flag := h.store.Get(key)
+	if flag.Key == "" {
+		http.Error(w, "flag not found", http.StatusNotFound)
+		return
+	}
 	h.store.Delete(key)
 	if err := h.persistence.Flush(); err != nil {
 		http.Error(w, "failed to save changes", http.StatusInternalServerError)
@@ -82,6 +93,10 @@ func (h *Handler) DeleteFlag(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ToggleFlag(w http.ResponseWriter, r *http.Request) {
 	key := r.PathValue("key")
 	flag := h.store.Get(key)
+	if flag.Key == "" {
+		http.Error(w, "flag not found", http.StatusNotFound)
+		return
+	}
 	flag.Enabled = !flag.Enabled
 	h.store.Set(key, flag)
 	if err := h.persistence.Flush(); err != nil {
@@ -90,7 +105,9 @@ func (h *Handler) ToggleFlag(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(flag)
+	if err := json.NewEncoder(w).Encode(flag); err != nil {
+		log.Printf("failed to encode response: %v", err)
+	}
 
 	h.hub.Broadcast(flag)
 }
@@ -111,7 +128,10 @@ func (h *Handler) Stream(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				log.Printf("stream write error: %v", err)
+				return
+			}
 			w.(http.Flusher).Flush()
 		case <-r.Context().Done():
 			return

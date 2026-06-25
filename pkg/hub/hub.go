@@ -41,11 +41,22 @@ func (h *Hub) Unregister(id uint64) {
 	delete(h.clients, id)
 }
 
+// Len returns the number of currently registered SSE clients.
+func (h *Hub) Len() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
+}
+
 // Broadcast sends the given flag to every connected client's channel.
 func (h *Hub) Broadcast(flag domain.FeatureFlag) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for _, ch := range h.clients {
-		ch <- flag
+		select {
+		case ch <- flag:
+		default:
+			// client too slow, drop the event
+		}
 	}
 }
