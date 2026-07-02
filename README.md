@@ -183,6 +183,30 @@ A flag with a rule that targets `pro` and `enterprise` plan users looks like:
 
 ---
 
+## Docker
+
+### Build the image
+
+```bash
+docker build -t feature-flag-engine .
+```
+
+### Run the container
+
+```bash
+docker run -p 8080:8080 feature-flag-engine
+```
+
+To persist flags across container restarts, mount a local file as a volume:
+
+```bash
+docker run -p 8080:8080 -v $(pwd)/flags.json:/app/flags.json feature-flag-engine
+```
+
+Without the volume mount, `flags.json` lives inside the container and is lost when it stops.
+
+---
+
 ## Running the tests
 
 ```bash
